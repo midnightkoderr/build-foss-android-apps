@@ -79,6 +79,16 @@ jobs:
         run: |
           echo "## Apps" > notes.md
           echo "- **KeePassDX** \`${{ needs.prerequisites.outputs.keepassdx_version }}\` — [upstream release](https://github.com/Kunzisoft/KeePassDX/releases/tag/${{ needs.prerequisites.outputs.keepassdx_version }})" >> notes.md
+          echo "" >> notes.md
+          echo "## Checksums" >> notes.md
+          echo "| File | SHA256 | CRC32 |" >> notes.md
+          echo "|------|--------|-------|" >> notes.md
+          find apks -name "*.apk" | sort | while read apk; do
+            name=$(basename "$apk")
+            sha256=$(sha256sum "$apk" | awk '{print $1}')
+            crc32=$(python3 -c "import binascii; d=open('$apk','rb').read(); print(format(binascii.crc32(d)&0xffffffff,'08x'))")
+            echo "| \`$name\` | \`$sha256\` | \`$crc32\` |" >> notes.md
+          done
 
       - name: Create release
         env:
