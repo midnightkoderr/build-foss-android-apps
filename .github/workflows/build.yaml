@@ -12,6 +12,12 @@ jobs:
       keepassdx_version: ${{ steps.keepassdx.outputs.version }}
       keepassdx_changed: ${{ steps.keepassdx.outputs.changed }}
     steps:
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
       - name: Verify keystore
         env:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_BASE64 }}
@@ -27,8 +33,10 @@ jobs:
           echo "Decoded size: $(wc -c < keystore.jks) bytes"
           echo "Decoded hash: $(sha256sum keystore.jks | cut -d' ' -f1)"
           file keystore.jks
+          java -version
           keytool -list \
             -keystore keystore.jks \
+            -storetype PKCS12 \
             -storepass "$STORE_PASS" \
             -alias "$KEY_ALIAS"
 
