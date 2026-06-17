@@ -1,0 +1,97 @@
+name: Build FOSS Android APKs
+
+on:
+  schedule:
+    - cron: '30 6 * * 6'  # Every Saturday 06:30 UTC
+  workflow_dispatch:
+
+jobs:
+  check-versions:
+    runs-on: ubuntu-latest
+    outputs:
+      keepassdx_version: ${{ steps.keepassdx.outputs.version }}
+      keepassdx_changed: ${{ steps.keepassdx.outputs.changed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Check KeePassDX upstream version
+        id: keepassdx
+        run: |
+          stored=$(jq -r '.kunzisoft_keepassdx' versions.json)
+          latest=$(curl -fsSL https://api.github.com/repos/Kunzisoft/KeePassDX/releases/latest | jq -r '.tag_name')
+          echo "version=$latest" >> $GITHUB_OUTPUT
+          [ "$stored" != "$latest" ] && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
+
+  keepassdx:
+    needs: check-versions
+    if: needs.check-versions.outputs.keepassdx_changed == 'true'
+    uses: ./.github/workflows/kunzisoft_keepassdx.yaml
+    with:
+      version: ${{ needs.check-versions.outputs.keepassdx_version }}
+    secrets:
+      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
+  release:
+    needs: [check-versions, keepassdx]
+    if: always() && needs.keepassdx.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - name: Download KeePassDX APKs
+        uses: actions/download-artifact@v4
+        with:
+          name: keepassdx-apks
+          path: apks/keepassdx
+
+      - name: Determine next release tag
+        id: tag
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          latest=$(gh release list --repo "${{ github.repository }}" --limit 1 --json tagName --jq '.[0].tagName // "v0"' 2>/dev/null || echo "v0")
+          num=$(echo "$latest" | sed 's/v//')
+          echo "tag=v$((num + 1))" >> $GITHUB_OUTPUT
+
+      - name: Compose release notes
+        run: |
+          echo "## Apps" > notes.md
+          echo "- **KeePassDX** \`${{ needs.check-versions.outputs.keepassdx_version }}\` — [upstream release](https://github.com/Kunzisoft/KeePassDX/releases/tag/${{ needs.check-versions.outputs.keepassdx_version }})" >> notes.md
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "${{ steps.tag.outputs.tag }}" \
+            --repo "${{ github.repository }}" \
+            --title "${{ steps.tag.outputs.tag }}" \
+            --notes-file notes.md \
+            $(find apks -name "*.apk")
+
+  update-versions:
+    needs: [check-versions, keepassdx, release]
+    if: always() && needs.release.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update versions.json
+        run: |
+          VERSION="${{ needs.check-versions.outputs.keepassdx_version }}"
+          jq --arg v "$VERSION" '.kunzisoft_keepassdx = $v' versions.json > tmp.json
+          mv tmp.json versions.json
+
+      - name: Commit updated versions
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add versions.json
+          git commit -m "chore: release ${{ needs.release.outputs.tag }}"
+          git push
