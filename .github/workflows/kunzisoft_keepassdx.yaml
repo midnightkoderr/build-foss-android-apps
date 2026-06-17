@@ -135,7 +135,7 @@ jobs:
           PYEOF
 
       - name: Decode keystore
-        run: echo "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/keystore.jks
+        run: printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/keystore.jks
 
       - name: Build libre APK (com.kunzisoft.keepass.libre)
         env:

@@ -6,12 +6,20 @@ on:
   workflow_dispatch:
 
 jobs:
-  check-versions:
+  prerequisites:
     runs-on: ubuntu-latest
     outputs:
       keepassdx_version: ${{ steps.keepassdx.outputs.version }}
       keepassdx_changed: ${{ steps.keepassdx.outputs.changed }}
     steps:
+      - name: Verify keystore
+        run: |
+          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+          keytool -list \
+            -keystore keystore.jks \
+            -storepass "${{ secrets.STORE_PASSWORD }}" \
+            -alias "${{ secrets.KEY_ALIAS }}"
+
       - uses: actions/checkout@v4
 
       - name: Check KeePassDX upstream version
@@ -23,11 +31,11 @@ jobs:
           [ "$stored" != "$latest" ] && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
 
   keepassdx:
-    needs: check-versions
-    if: needs.check-versions.outputs.keepassdx_changed == 'true'
+    needs: prerequisites
+    if: needs.prerequisites.outputs.keepassdx_changed == 'true'
     uses: ./.github/workflows/kunzisoft_keepassdx.yaml
     with:
-      version: ${{ needs.check-versions.outputs.keepassdx_version }}
+      version: ${{ needs.prerequisites.outputs.keepassdx_version }}
     secrets:
       KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
       STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
@@ -35,7 +43,7 @@ jobs:
       KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
 
   release:
-    needs: [check-versions, keepassdx]
+    needs: [prerequisites, keepassdx]
     if: always() && needs.keepassdx.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -61,7 +69,7 @@ jobs:
       - name: Compose release notes
         run: |
           echo "## Apps" > notes.md
-          echo "- **KeePassDX** \`${{ needs.check-versions.outputs.keepassdx_version }}\` — [upstream release](https://github.com/Kunzisoft/KeePassDX/releases/tag/${{ needs.check-versions.outputs.keepassdx_version }})" >> notes.md
+          echo "- **KeePassDX** \`${{ needs.prerequisites.outputs.keepassdx_version }}\` — [upstream release](https://github.com/Kunzisoft/KeePassDX/releases/tag/${{ needs.prerequisites.outputs.keepassdx_version }})" >> notes.md
 
       - name: Create release
         env:
@@ -74,7 +82,7 @@ jobs:
             $(find apks -name "*.apk")
 
   update-versions:
-    needs: [check-versions, keepassdx, release]
+    needs: [prerequisites, keepassdx, release]
     if: always() && needs.release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -84,7 +92,7 @@ jobs:
 
       - name: Update versions.json
         run: |
-          VERSION="${{ needs.check-versions.outputs.keepassdx_version }}"
+          VERSION="${{ needs.prerequisites.outputs.keepassdx_version }}"
           jq --arg v "$VERSION" '.kunzisoft_keepassdx = $v' versions.json > tmp.json
           mv tmp.json versions.json
 
