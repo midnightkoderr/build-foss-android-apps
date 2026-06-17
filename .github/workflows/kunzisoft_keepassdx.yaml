@@ -134,6 +134,25 @@ jobs:
           print("All 5 patches applied successfully")
           PYEOF
 
+      - name: Patch crypto/build.gradle
+        run: |
+          python3 << 'PYEOF'
+          anchor = '        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"\n'
+          ndk_block = (
+              '\n'
+              '        ndk {\n'
+              '            abiFilters "arm64-v8a"\n'
+              '        }\n'
+          )
+          with open('crypto/build.gradle', 'r') as f:
+              content = f.read()
+          assert anchor in content, "PATCH FAILED: testInstrumentationRunner anchor not found in crypto/build.gradle"
+          content = content.replace(anchor, anchor + ndk_block, 1)
+          with open('crypto/build.gradle', 'w') as f:
+              f.write(content)
+          print("crypto/build.gradle patched: ndk abiFilters arm64-v8a")
+          PYEOF
+
       - name: Decode keystore
         run: printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > $GITHUB_WORKSPACE/keystore.jks
 
