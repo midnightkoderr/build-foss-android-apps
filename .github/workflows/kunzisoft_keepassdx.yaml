@@ -78,9 +78,9 @@ jobs:
           )
           anchor = '        manifestPlaceholders = [ googleAndroidBackupAPIKey:"unused" ]\n'
           assert anchor in content, "PATCH FAILED: manifestPlaceholders anchor not found"
-          content = content.replace(anchor, anchor + ndk_block, 1)
+          content = content.replace(anchor, anchor + ndk_block + '        resConfigs "en", "ru", "fr", "de"\n', 1)
 
-          # 3. signing config wired into release buildType — regex finds minifyEnabled inside release {}
+          # 3. minifyEnabled = true + signing config wired into release buildType
           signing_ref = (
               '\n            if (System.getenv("KEYSTORE_PATH")) {'
               '\n                signingConfig = signingConfigs.release'
@@ -88,7 +88,7 @@ jobs:
           )
           content, n = re.subn(
               r'(buildTypes\s*\{.*?release\s*\{.*?)(minifyEnabled\s*=?\s*false)',
-              r'\1\2' + signing_ref,
+              r'\1minifyEnabled = true' + signing_ref,
               content, count=1, flags=re.DOTALL
           )
           assert n == 1, "PATCH FAILED: buildTypes.release.minifyEnabled anchor not found"
