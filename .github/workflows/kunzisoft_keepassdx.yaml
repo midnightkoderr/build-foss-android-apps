@@ -37,7 +37,15 @@ jobs:
       - name: Accept Android SDK licenses
         run: yes | $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager --licenses || true
 
+      - name: Cache NDK
+        id: cache-ndk
+        uses: actions/cache@v4
+        with:
+          path: ${{ env.ANDROID_HOME }}/ndk/25.2.9519653
+          key: ndk-25.2.9519653
+
       - name: Install NDK 25.2.9519653
+        if: steps.cache-ndk.outputs.cache-hit != 'true'
         run: $ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager "ndk;25.2.9519653"
 
       - name: Grant execute permission for gradlew
@@ -80,7 +88,7 @@ jobs:
           assert anchor in content, "PATCH FAILED: manifestPlaceholders anchor not found"
           content = content.replace(anchor, anchor + ndk_block + '        resConfigs "en", "ru", "fr", "de"\n', 1)
 
-          # 3. minifyEnabled = true + signing config wired into release buildType
+          # 3. signing config wired into release buildType
           signing_ref = (
               '\n            if (System.getenv("KEYSTORE_PATH")) {'
               '\n                signingConfig = signingConfigs.release'
@@ -88,7 +96,7 @@ jobs:
           )
           content, n = re.subn(
               r'(buildTypes\s*\{.*?release\s*\{.*?)(minifyEnabled\s*=?\s*false)',
-              r'\1minifyEnabled = true' + signing_ref,
+              r'\1\2' + signing_ref,
               content, count=1, flags=re.DOTALL
           )
           assert n == 1, "PATCH FAILED: buildTypes.release.minifyEnabled anchor not found"
@@ -156,27 +164,20 @@ jobs:
       - name: Decode keystore
         run: printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > $GITHUB_WORKSPACE/keystore.jks
 
-      - name: Build libre APK (com.kunzisoft.keepass.libre)
+      - name: Build APKs
         env:
           KEYSTORE_PATH: ${{ github.workspace }}/keystore.jks
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleLibreRelease
+        run: ./gradlew assembleLibreRelease assembleLibrefreeRelease
 
-      - name: Rename libre APK
-        run: mv app/build/outputs/apk/libre/release/app-libre-release.apk app/build/outputs/apk/libre/release/KeePassDX_libre_arm64v8a_${{ inputs.version }}.apk
-
-      - name: Build librefree APK (com.kunzisoft.keepass.free)
-        env:
-          KEYSTORE_PATH: ${{ github.workspace }}/keystore.jks
-          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
-        run: ./gradlew assembleLibrefreeRelease
-
-      - name: Rename free APK
-        run: mv app/build/outputs/apk/librefree/release/app-librefree-release.apk app/build/outputs/apk/librefree/release/KeePassDX_free_arm64v8a_${{ inputs.version }}.apk
+      - name: Rename APKs
+        run: |
+          mv app/build/outputs/apk/libre/release/app-libre-release.apk \
+             app/build/outputs/apk/libre/release/KeePassDX_libre_arm64v8a_${{ inputs.version }}.apk
+          mv app/build/outputs/apk/librefree/release/app-librefree-release.apk \
+             app/build/outputs/apk/librefree/release/KeePassDX_free_arm64v8a_${{ inputs.version }}.apk
 
       - name: Stage APKs
         uses: actions/upload-artifact@v4
