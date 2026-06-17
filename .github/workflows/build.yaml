@@ -13,12 +13,15 @@ jobs:
       keepassdx_changed: ${{ steps.keepassdx.outputs.changed }}
     steps:
       - name: Verify keystore
+        env:
+          STORE_PASS: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > keystore.jks
+          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > keystore.jks
           keytool -list \
             -keystore keystore.jks \
-            -storepass "${{ secrets.STORE_PASSWORD }}" \
-            -alias "${{ secrets.KEY_ALIAS }}"
+            -storepass "$STORE_PASS" \
+            -alias "$KEY_ALIAS"
 
       - uses: actions/checkout@v4
 

@@ -135,7 +135,7 @@ jobs:
           PYEOF
 
       - name: Decode keystore
-        run: printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > $GITHUB_WORKSPACE/keystore.jks
+        run: printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > $GITHUB_WORKSPACE/keystore.jks
 
       - name: Build libre APK (com.kunzisoft.keepass.libre)
         env:
@@ -143,6 +143,7 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
         run: ./gradlew assembleLibreRelease
 
       - name: Rename libre APK
@@ -154,6 +155,7 @@ jobs:
           STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
           KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+
         run: ./gradlew assembleLibrefreeRelease
 
       - name: Rename free APK
