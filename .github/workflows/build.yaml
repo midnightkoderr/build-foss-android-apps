@@ -6,8 +6,6 @@ on:
   workflow_dispatch:
 
 env:
-  APKTOOL_REPO: https://github.com/iBotPeaches/Apktool
-  APKTOOL_VERSION: 2.9.3
   JDK_VERSION: 17
   JAVA_DISTRIBUTION: temurin
 
@@ -75,20 +73,6 @@ jobs:
             echo "ANY_CHANGED=false" >> "$GITHUB_ENV"
           fi
 
-      - name: Cache apktool
-        id: cache-apktool
-        if: env.ANY_CHANGED == 'true'
-        uses: actions/cache@v4
-        with:
-          path: apktool.jar
-          key: apktool-${{ env.APKTOOL_VERSION }}
-
-      - name: Install apktool
-        if: env.ANY_CHANGED == 'true' && steps.cache-apktool.outputs.cache-hit != 'true'
-        run: |
-          curl -fsSL -o apktool.jar \
-            "${{ env.APKTOOL_REPO }}/releases/download/v${{ env.APKTOOL_VERSION }}/apktool_${{ env.APKTOOL_VERSION }}.jar"
-
       - name: Repackage APKs (strip ABIs, re-sign)
         if: env.ANY_CHANGED == 'true'
         env:
@@ -115,34 +99,32 @@ jobs:
 
           repackage() {
             local src="$1" out="$2"
-            local name="${src%.apk}"
+            local aligned="aligned_$(basename "$src")"
 
             echo "::group::Repackage $src -> $(basename "$out")"
 
-            # Decompile
-            java -jar apktool.jar d -f -o "decoded_${name}" "$src"
-
-            # Keep only the arm64-v8a native libs
-            if [ -d "decoded_${name}/lib" ]; then
-              find "decoded_${name}/lib" -mindepth 1 -maxdepth 1 -type d \
-                ! -name 'arm64-v8a' -exec rm -rf {} +
-              echo "Remaining ABIs:"; ls "decoded_${name}/lib"
-            fi
-
-            # Recompile
-            java -jar apktool.jar b "decoded_${name}" -o "unsigned_${name}.apk"
+            # Drop every native-lib ABI except arm64-v8a, straight out of the
+            # zip — no decompile/recompile, so compiled resources stay intact.
+            for abi in $(unzip -Z1 "$src" 'lib/*' 2>/dev/null | sed -E 's#^lib/([^/]+)/.*#\1#' | sort -u); do
+              if [ "$abi" != "arm64-v8a" ]; then
+                echo "Removing lib/$abi"
+                zip -dq "$src" "lib/$abi/*"
+              fi
+            done
+            echo "Remaining ABIs:"
+            unzip -Z1 "$src" 'lib/*' 2>/dev/null | sed -E 's#^lib/([^/]+)/.*#\1#' | sort -u || echo "(none)"
 
             # Align (page-align uncompressed .so for in-place loading)
-            "$BUILD_TOOLS/zipalign" -f -p 4 "unsigned_${name}.apk" "aligned_${name}.apk"
+            "$BUILD_TOOLS/zipalign" -f -p 4 "$src" "$aligned"
 
-            # Sign with personal key
+            # Re-sign with personal key (replaces the upstream signature)
             "$BUILD_TOOLS/apksigner" sign \
               --ks "$GITHUB_WORKSPACE/keystore.jks" \
               --ks-pass env:STORE_PASSWORD \
               --ks-key-alias "$KEY_ALIAS" \
               --key-pass env:KEY_PASSWORD \
               --out "$out" \
-              "aligned_${name}.apk"
+              "$aligned"
 
             # Verify signature + alignment
             "$BUILD_TOOLS/apksigner" verify --verbose "$out"

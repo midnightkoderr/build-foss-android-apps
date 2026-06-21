@@ -70,7 +70,7 @@ build.yaml
 
 **`release`** owns (runs only when an upstream version changed):
 - Downloading the prebuilt upstream APKs for the exact release tag
-- Decompiling with [apktool](https://github.com/iBotPeaches/Apktool), removing all `lib/` ABIs except `arm64-v8a`, recompiling, zipaligning, and re-signing
+- Deleting every `lib/<abi>/` entry except `arm64-v8a` directly from the APK zip (no decompile/recompile, so compiled resources stay byte-identical), then zipaligning and re-signing
 - Creating the GitHub Release with composed notes
 - Committing the `config.json` bump
 
