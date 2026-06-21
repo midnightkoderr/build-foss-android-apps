@@ -53,9 +53,14 @@ jobs:
             stored=$(jq -r --arg k "$key" '.[$k].version // ""' config.json)
             first_url=$(jq -r --arg k "$key" '.[$k].urls[0]' config.json)
             repo=$(sed -E 's#https?://github.com/([^/]+/[^/]+)/.*#\1#' <<<"$first_url")
-            latest=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name')
+            latest=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name // ""')
             echo "$key: stored=$stored latest=$latest (repo=$repo)"
-            if [ "$stored" != "$latest" ]; then
+            if [ -z "$latest" ] || [ "$latest" = "null" ]; then
+              echo "  !! could not resolve latest tag for $repo, skipping"
+              continue
+            fi
+            # Empty version => always build latest; otherwise build only when it differs.
+            if [ -z "$stored" ] || [ "$stored" != "$latest" ]; then
               urls=$(jq -c --arg k "$key" '.[$k].urls' config.json)
               entry=$(jq -nc --arg k "$key" --arg v "$latest" --argjson u "$urls" \
                 '{key: $k, version: $v, urls: $u}')
