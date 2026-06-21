@@ -2,7 +2,7 @@ name: Strip ABIs from FOSS Android APKs
 
 on:
   schedule:
-    - cron: '30 6 * * 6' # Every Saturday 06:30 UTC
+    - cron: '0 0 28 * *' # Every 28th day of the month at 00:00 UTC
   workflow_dispatch:
 
 env:
