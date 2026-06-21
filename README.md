@@ -9,12 +9,12 @@ Automated builds of FOSS Android applications for **arm64-v8a**, signed with a p
 Every Saturday at 06:30 UTC (or on manual trigger), the workflow:
 
 1. Checks each app's latest upstream release via GitHub API
-2. Compares against [`versions.json`](versions.json) to skip apps that haven't changed
-3. Builds only what's new, signs with the keystore stored in repository secrets
+2. Compares against [`config.json`](config.json) to skip apps that haven't changed
+3. Downloads the prebuilt upstream APKs, strips every native-lib ABI except `arm64-v8a`, then re-signs with the keystore stored in repository secrets
 4. Creates a single GitHub Release (tagged `v1`, `v2`, `v3`...) containing all newly built APKs
-5. Commits the updated `versions.json` back to the repo
+5. Commits the updated `config.json` back to the repo
 
-A new release is only created when at least one app has a new upstream version. `versions.json` is only updated after the release is confirmed.
+A new release is only created when at least one app has a new upstream version. `config.json` is only updated after the release is confirmed.
 
 ## Apps
 
@@ -22,30 +22,59 @@ A new release is only created when at least one app has a new upstream version. 
 |-----|----------|---------|
 | [KeePassDX](https://github.com/Kunzisoft/KeePassDX) | `Kunzisoft/KeePassDX` | `libre`, `free` (libre + `.free` package) |
 
+## Configuration (`config.json`)
+
+Each app is one entry. The key is the upstream `owner/repo`, and `urls` is a list of
+GitHub release-asset templates where `{TAG}` is replaced by the resolved release tag:
+
+```json
+{
+  "Kunzisoft/KeePassDX": {
+    "version": "4.4.5",
+    "urls": [
+      "https://github.com/Kunzisoft/KeePassDX/releases/download/{TAG}/KeePassDX-{TAG}-libre.apk",
+      "https://github.com/Kunzisoft/KeePassDX/releases/download/{TAG}/KeePassDX-{TAG}-free.apk"
+    ]
+  }
+}
+```
+
+To add an app you only add a new entry with its `urls` — everything else is derived:
+
+- The **repo to version-check** is parsed from the first URL.
+- `version` is filled in / bumped automatically by the workflow after each release.
+
 ## APK naming
 
+The output name is derived from the upstream asset name: the version token is dropped,
+the rest is joined with `_`, and `arm64v8a` + the version are appended.
+
 ```
-KeePassDX_libre_arm64v8a_v4.1.0.apk
-KeePassDX_free_arm64v8a_v4.1.0.apk
+KeePassDX-{TAG}-libre.apk  ->  KeePassDX_libre_arm64v8a_{TAG}.apk
+KeePassDX-{TAG}-free.apk   ->  KeePassDX_free_arm64v8a_{TAG}.apk
 ```
 
 ## Workflow structure
 
+Everything lives in a single workflow, [`build.yaml`](.github/workflows/build.yaml), split into two jobs:
+
 ```
-build.yaml                        ← orchestrator (schedule, secrets, release)
-└── kunzisoft_keepassdx.yaml      ← builds KeePassDX, stages APKs as temp artifacts
+build.yaml
+├── prerequisites   ← verifies the keystore, checks upstream versions vs config.json
+└── release         ← runs only when something changed
 ```
 
-**`build.yaml`** owns:
-- Version checks (`versions.json` vs GitHub API)
-- Passing secrets to app workflows
+**`prerequisites`** owns:
+- Verifying the keystore is readable with the configured password/alias
+- Version checks (`config.json` vs GitHub API), gating the `release` job
+
+**`release`** owns (runs only when an upstream version changed):
+- Downloading the prebuilt upstream APKs for the exact release tag
+- Decompiling with [apktool](https://github.com/iBotPeaches/Apktool), removing all `lib/` ABIs except `arm64-v8a`, recompiling, zipaligning, and re-signing
 - Creating the GitHub Release with composed notes
-- Committing version bumps
+- Committing the `config.json` bump
 
-**App workflows** own:
-- Cloning the upstream repo at the exact release tag
-- Patching and building the APK
-- Staging the renamed APK as a 1-day artifact for the release job to pick up
+Keeping it in one workflow avoids a reusable-workflow call (an extra runner) and the artifact upload/download round-trip between jobs.
 
 ## Secrets required
 

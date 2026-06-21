@@ -1,0 +1,9 @@
+{
+  "Kunzisoft/KeePassDX": {
+    "version": "4.4.5",
+    "urls": [
+      "https://github.com/Kunzisoft/KeePassDX/releases/download/{TAG}/KeePassDX-{TAG}-libre.apk",
+      "https://github.com/Kunzisoft/KeePassDX/releases/download/{TAG}/KeePassDX-{TAG}-free.apk"
+    ]
+  }
+}

@@ -1,73 +1,162 @@
-name: Build FOSS Android APKs
+name: Strip ABIs from FOSS Android APKs
 
 on:
   schedule:
-    - cron: '30 6 * * 6'  # Every Saturday 06:30 UTC
+    - cron: '30 6 * * 6' # Every Saturday 06:30 UTC
   workflow_dispatch:
 
+env:
+  APKTOOL_REPO: https://github.com/iBotPeaches/Apktool
+  APKTOOL_VERSION: 2.9.3
+  JDK_VERSION: 17
+  JAVA_DISTRIBUTION: temurin
+
 jobs:
-  prerequisites:
+  build:
     runs-on: ubuntu-latest
-    outputs:
-      keepassdx_version: ${{ steps.keepassdx.outputs.version }}
-      keepassdx_changed: ${{ steps.keepassdx.outputs.changed }}
+    permissions:
+      contents: write
     steps:
-      - name: Set up JDK 17
+      - uses: actions/checkout@v4
+
+      - name: Cache JDK
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.tool_cache }}/Java_*_jdk/${{ env.JDK_VERSION }}*
+          key: jdk-${{ runner.os }}-${{ env.JAVA_DISTRIBUTION }}-${{ env.JDK_VERSION }}
+
+      - name: Set up JDK ${{ env.JDK_VERSION }}
         uses: actions/setup-java@v4
         with:
-          java-version: '17'
-          distribution: 'temurin'
+          java-version: ${{ env.JDK_VERSION }}
+          distribution: ${{ env.JAVA_DISTRIBUTION }}
 
-      - name: Verify keystore
+      - name: Decode and verify keystore
         env:
           STORE_PASS: ${{ secrets.STORE_PASSWORD }}
           KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
         run: |
-          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > keystore.jks
+          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | tr -d '[:space:]' | base64 -d > "${GITHUB_WORKSPACE}/keystore.jks"
           keytool -list \
-            -keystore keystore.jks \
-            -storepass "$STORE_PASS" \
-            -alias "$KEY_ALIAS"
+            -keystore "${GITHUB_WORKSPACE}/keystore.jks" \
+            -storepass "${STORE_PASS}" \
+            -alias "${KEY_ALIAS}"
 
-      - uses: actions/checkout@v4
-
-      - name: Check KeePassDX upstream version
-        id: keepassdx
+      - name: Check upstream versions
         run: |
-          stored=$(jq -r '.kunzisoft_keepassdx' versions.json)
-          latest=$(curl -fsSL https://api.github.com/repos/Kunzisoft/KeePassDX/releases/latest | jq -r '.tag_name')
-          echo "version=$latest" >> $GITHUB_OUTPUT
-          [ "$stored" != "$latest" ] && echo "changed=true" >> $GITHUB_OUTPUT || echo "changed=false" >> $GITHUB_OUTPUT
+          set -euo pipefail
 
-  keepassdx:
-    needs: prerequisites
-    if: needs.prerequisites.outputs.keepassdx_changed == 'true'
-    uses: ./.github/workflows/kunzisoft_keepassdx.yaml
-    with:
-      version: ${{ needs.prerequisites.outputs.keepassdx_version }}
-    secrets:
-      KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-      STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
-      KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-      KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          # An app changed when its stored version differs from the upstream
+          # latest release tag. The repo to query is parsed from the first URL.
+          changed='[]'
+          while read -r key; do
+            stored=$(jq -r --arg k "$key" '.[$k].version // ""' config.json)
+            first_url=$(jq -r --arg k "$key" '.[$k].urls[0]' config.json)
+            repo=$(sed -E 's#https?://github.com/([^/]+/[^/]+)/.*#\1#' <<<"$first_url")
+            latest=$(curl -fsSL "https://api.github.com/repos/$repo/releases/latest" | jq -r '.tag_name')
+            echo "$key: stored=$stored latest=$latest (repo=$repo)"
+            if [ "$stored" != "$latest" ]; then
+              urls=$(jq -c --arg k "$key" '.[$k].urls' config.json)
+              entry=$(jq -nc --arg k "$key" --arg v "$latest" --argjson u "$urls" \
+                '{key: $k, version: $v, urls: $u}')
+              changed=$(jq -c --argjson e "$entry" '. + [$e]' <<<"$changed")
+            fi
+          done < <(jq -r 'keys[]' config.json)
 
-  release:
-    needs: [prerequisites, keepassdx]
-    if: always() && needs.keepassdx.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    outputs:
-      tag: ${{ steps.tag.outputs.tag }}
-    steps:
-      - name: Download KeePassDX APKs
-        uses: actions/download-artifact@v4
+          echo "CHANGED=$changed" >> "$GITHUB_ENV"
+          if [ "$(jq 'length' <<<"$changed")" -gt 0 ]; then
+            echo "ANY_CHANGED=true" >> "$GITHUB_ENV"
+          else
+            echo "ANY_CHANGED=false" >> "$GITHUB_ENV"
+          fi
+
+      - name: Cache apktool
+        id: cache-apktool
+        if: env.ANY_CHANGED == 'true'
+        uses: actions/cache@v4
         with:
-          name: keepassdx-apks
-          path: apks/keepassdx
+          path: apktool.jar
+          key: apktool-${{ env.APKTOOL_VERSION }}
+
+      - name: Install apktool
+        if: env.ANY_CHANGED == 'true' && steps.cache-apktool.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL -o apktool.jar \
+            "${{ env.APKTOOL_REPO }}/releases/download/v${{ env.APKTOOL_VERSION }}/apktool_${{ env.APKTOOL_VERSION }}.jar"
+
+      - name: Repackage APKs (strip ABIs, re-sign)
+        if: env.ANY_CHANGED == 'true'
+        env:
+          STORE_PASSWORD: ${{ secrets.STORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+
+          BUILD_TOOLS=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          echo "Using build-tools: $BUILD_TOOLS"
+          mkdir -p dist
+
+          # KeePassDX-{TAG}-libre.apk  ->  KeePassDX_libre_arm64v8a_{TAG}.apk
+          outname() {
+            python3 - "$1" "$2" <<'PY'
+          import sys
+          fname, version = sys.argv[1], sys.argv[2]
+          stem = fname[:-4] if fname.endswith('.apk') else fname
+          tokens = [t for t in stem.split('-') if t != version]
+          print('_'.join(tokens) + f'_arm64v8a_{version}.apk')
+          PY
+          }
+
+          repackage() {
+            local src="$1" out="$2"
+            local name="${src%.apk}"
+
+            echo "::group::Repackage $src -> $(basename "$out")"
+
+            # Decompile
+            java -jar apktool.jar d -f -o "decoded_${name}" "$src"
+
+            # Keep only the arm64-v8a native libs
+            if [ -d "decoded_${name}/lib" ]; then
+              find "decoded_${name}/lib" -mindepth 1 -maxdepth 1 -type d \
+                ! -name 'arm64-v8a' -exec rm -rf {} +
+              echo "Remaining ABIs:"; ls "decoded_${name}/lib"
+            fi
+
+            # Recompile
+            java -jar apktool.jar b "decoded_${name}" -o "unsigned_${name}.apk"
+
+            # Align (page-align uncompressed .so for in-place loading)
+            "$BUILD_TOOLS/zipalign" -f -p 4 "unsigned_${name}.apk" "aligned_${name}.apk"
+
+            # Sign with personal key
+            "$BUILD_TOOLS/apksigner" sign \
+              --ks "$GITHUB_WORKSPACE/keystore.jks" \
+              --ks-pass env:STORE_PASSWORD \
+              --ks-key-alias "$KEY_ALIAS" \
+              --key-pass env:KEY_PASSWORD \
+              --out "$out" \
+              "aligned_${name}.apk"
+
+            # Verify signature + alignment
+            "$BUILD_TOOLS/apksigner" verify --verbose "$out"
+
+            echo "::endgroup::"
+          }
+
+          # Flatten every changed app into "version<TAB>url" lines, with {TAG} substituted.
+          while IFS=$'\t' read -r version url; do
+            [ -n "$url" ] || continue
+            fname=$(basename "$url")
+            echo "Downloading $url"
+            curl -fsSL -o "$fname" "$url"
+            repackage "$fname" "dist/$(outname "$fname" "$version")"
+          done < <(jq -r '.[] | .version as $v | .urls[] | [$v, gsub("\\{TAG\\}"; $v)] | @tsv' <<<"$CHANGED")
 
       - name: Determine next release tag
         id: tag
+        if: env.ANY_CHANGED == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -76,14 +165,21 @@ jobs:
           echo "tag=v$((num + 1))" >> $GITHUB_OUTPUT
 
       - name: Compose release notes
+        if: env.ANY_CHANGED == 'true'
         run: |
-          echo "## Apps" > notes.md
-          echo "- **KeePassDX** \`${{ needs.prerequisites.outputs.keepassdx_version }}\` — [upstream release](https://github.com/Kunzisoft/KeePassDX/releases/tag/${{ needs.prerequisites.outputs.keepassdx_version }})" >> notes.md
-          echo "" >> notes.md
-          echo "## Checksums" >> notes.md
-          echo "| File | SHA256 | CRC32 |" >> notes.md
-          echo "|------|--------|-------|" >> notes.md
-          find apks -name "*.apk" | sort | while read apk; do
+          set -euo pipefail
+          {
+            echo "## Apps"
+            jq -r '.[]
+              | (.urls[0] | capture("github.com/(?<repo>[^/]+/[^/]+)/").repo) as $repo
+              | "- **\($repo | split("/")[1])** `\(.version)` — [upstream release](https://github.com/\($repo)/releases/tag/\(.version))"' \
+              <<<"$CHANGED"
+            echo ""
+            echo "## Checksums"
+            echo "| File | SHA256 | CRC32 |"
+            echo "|------|--------|-------|"
+          } > notes.md
+          find dist -name "*.apk" | sort | while read -r apk; do
             name=$(basename "$apk")
             sha256=$(sha256sum "$apk" | awk '{print $1}')
             crc32=$(python3 -c "import binascii; d=open('$apk','rb').read(); print(format(binascii.crc32(d)&0xffffffff,'08x'))")
@@ -91,6 +187,7 @@ jobs:
           done
 
       - name: Create release
+        if: env.ANY_CHANGED == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
@@ -98,27 +195,24 @@ jobs:
             --repo "${{ github.repository }}" \
             --title "${{ steps.tag.outputs.tag }}" \
             --notes-file notes.md \
-            $(find apks -name "*.apk")
+            $(find dist -name "*.apk")
 
-  update-versions:
-    needs: [prerequisites, keepassdx, release]
-    if: always() && needs.release.result == 'success'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Update versions.json
+      - name: Update config.json
+        if: env.ANY_CHANGED == 'true'
         run: |
-          VERSION="${{ needs.prerequisites.outputs.keepassdx_version }}"
-          jq --arg v "$VERSION" '.kunzisoft_keepassdx = $v' versions.json > tmp.json
-          mv tmp.json versions.json
+          set -euo pipefail
+          while read -r app; do
+            k=$(jq -r '.key' <<<"$app")
+            v=$(jq -r '.version' <<<"$app")
+            jq --arg k "$k" --arg v "$v" '.[$k].version = $v' config.json > tmp.json
+            mv tmp.json config.json
+          done < <(jq -c '.[]' <<<"$CHANGED")
 
       - name: Commit updated versions
+        if: env.ANY_CHANGED == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add versions.json
-          git commit -m "chore: release ${{ needs.release.outputs.tag }}"
+          git add config.json
+          git commit -m "chore: release ${{ steps.tag.outputs.tag }}"
           git push
